@@ -118,7 +118,7 @@ def detectTransitions(analogSignal, earliestSample=0, histBinNumber=4, upTransit
     return triggerStart, triggerStop
 
 def get_analog_times(analog_signal, fs=20000, lowpassFilter=True, lowPassfilterBand=500.0, histBins=4,
-                 start_sample=0, last_sample=None, upTransition=False, outputPlot=False):
+                 start_sample=0, last_sample=None, upTransition=False, outputPlot=False, sample_type=None):
     """
     Wrapper for detectTransitions function to return start and end transition TIMES instead of signal indices
 
@@ -154,7 +154,10 @@ def get_analog_times(analog_signal, fs=20000, lowpassFilter=True, lowPassfilterB
         upTransition=upTransition, lowpassFilter=lowpassFilter, fs=fs, lowPassfilterBand=lowPassfilterBand, outputPlot=outputPlot)
     start_times = starts / fs
     end_times = ends / fs
-    print(f'Found {len(start_times)} raw triggers')   
+    if sample_type is None:
+        print(f'Found {len(start_times)} raw triggers')   
+    else:
+        print(f'Found {len(start_times)} raw triggers for {sample_type}')   
     return start_times, end_times
 
 
@@ -205,7 +208,124 @@ def align_scope_triggers_to_frames(s2p_output, scope_times):
             scope_times_end = np.append(scope_times_end, transitions_to_append)
 
     return scope_times, scope_times_end
-    
+
+def stack_traces(list_of_arrays, fill_value=np.nan):
+    """
+    Stacks a list of 1D or 2D NumPy arrays with inconsistent column dimensions
+    by padding the shorter arrays.
+
+    Parameters
+    ----------
+    list_of_arrays : list of np.ndarray
+        A list of 1D (T,) or 2D (N×T) arrays.
+    fill_value : scalar
+        Value used to pad shorter arrays (default = np.nan).
+
+    Returns
+    -------
+    stacked : np.ndarray
+        2D array with shape (sum(rows), max(columns)).
+    """
+    # Filter out None/empty entries
+    arrays = [np.asarray(a) for a in list_of_arrays if a is not None and a.size > 0]
+    if not arrays:
+        return np.array([])
+
+    # Coerce all to 2D
+    arrays_2d = []
+    for a in arrays:
+        if a.ndim == 1:
+            a = a[np.newaxis, :]   # shape → (1, T)
+        elif a.ndim > 2:
+            raise ValueError(f"Expected 1D or 2D array, got shape {a.shape}")
+        arrays_2d.append(a)
+
+    # Find max # of columns
+    max_cols = max(a.shape[1] for a in arrays_2d)
+
+    # Pad all arrays to that length
+    padded = []
+    for a in arrays_2d:
+        n_rows, n_cols = a.shape
+        if n_cols < max_cols:
+            pad = np.full((n_rows, max_cols), fill_value, dtype=float)
+            pad[:, :n_cols] = a
+            padded.append(pad)
+        else:
+            padded.append(a)
+
+    # Stack vertically
+    stacked_output = np.vstack(padded)
+    stacked_output = stacked_output.dropna(axis=1, how='all')
+    return stacked_output
+
+
+def restrict_traces(arrays, *, align="left", pad=False, fill=np.nan):
+    """
+    Make a stack with a common time length from a list of arrays.
+    - Accepts 1D (T,) or 2D (N x T) arrays.
+    - If pad=False (default): truncate each to the minimum T.
+      align: 'left' | 'right' | 'center'
+    - If pad=True: pad each to the maximum T with 'fill' instead of truncating.
+    """
+    if not arrays:
+        return None
+
+    # Clean & coerce to 2D: 1D -> (1, T)
+    norm = []
+    for arr in arrays:
+        if arr is None:
+            continue
+        arr = np.asarray(arr)
+        if arr.size == 0:
+            continue
+        if arr.ndim == 1:
+            arr = arr[np.newaxis, :]
+        elif arr.ndim > 2:
+            raise ValueError(f"Expected 1D/2D arrays, found shape {arr.shape}")
+        norm.append(arr)
+
+    if not norm:
+        return None
+
+    lens = [a.shape[1] for a in norm]
+    min_T, max_T = int(min(lens)), int(max(lens))
+
+    if not pad:
+        # Truncate to min length
+        out = []
+        for a in norm:
+            if align == "left":
+                out.append(a[:, :min_T])
+            elif align == "right":
+                out.append(a[:, -min_T:])
+            elif align == "center":
+                start = (a.shape[1] - min_T) // 2
+                out.append(a[:, start:start + min_T])
+            else:
+                raise ValueError("align must be 'left', 'right', or 'center'")
+        return np.vstack(out)
+    else:
+        # Pad to max length
+        out = []
+        for a in norm:
+            pad_left = pad_right = 0
+            need = max_T - a.shape[1]
+            if need <= 0:
+                out.append(a); continue
+            if align == "left":
+                pad_right = need
+            elif align == "right":
+                pad_left = need
+            elif align == "center":
+                pad_left = need // 2
+                pad_right = need - pad_left
+            else:
+                raise ValueError("align must be 'left', 'right', or 'center'")
+            out.append(np.pad(a, ((0,0),(pad_left,pad_right)),
+                              mode="constant", constant_values=fill))
+        return np.vstack(out)
+        
 def resample_traces(traces, frame_times, len_cam_times):
     """
     Resample 2P traces to match sampling rate of other data/signals 
@@ -254,6 +374,108 @@ def debug_triggers(signal, earliestSample=0, signal_fs=20e3):
   
   return triggers_df
 
+def motion_to_2p_bins(frame_times, motion, motion_times, max_gap_s=0.5, fill_value='interpolate'):
+    ft = np.asarray(frame_times, float)
+    mt = np.asarray(motion_times, float)
+    m  = np.asarray(motion, float)
+
+    if ft.size == 0:
+        return np.array([], dtype=float)
+
+    # Build 2P bin edges (robust to very short recordings)
+    edges = np.empty(ft.size + 1, float)
+    if ft.size >= 2:
+        edges[1:-1] = 0.5 * (ft[:-1] + ft[1:])
+        edges[0]    = ft[0] - (ft[1] - ft[0]) / 2.0
+        edges[-1]   = ft[-1] + (ft[-1] - ft[-2]) / 2.0
+    else:
+        # single frame: make a tiny bin around it
+        half = 0.5
+        edges[0] = ft[0] - half
+        edges[1] = ft[0] + half
+
+    # Bin-mean motion into frames
+    bin_idx = np.digitize(mt, edges) - 1  # [-1..T2P]
+    motion_2p = np.full(ft.size, np.nan, float)
+    for k in range(ft.size):
+        in_bin = (bin_idx == k)
+        if np.any(in_bin):
+            motion_2p[k] = np.nanmean(m[in_bin])
+
+    # Fill NaNs without dropping frames
+    ok_mask = np.isfinite(motion_2p)
+    if ok_mask.sum() == 0:
+        # nothing valid at all → just return NaNs (or choose a constant if you prefer)
+        return motion_2p
+
+    if fill_value == 'interpolate':
+        motion_2p[~ok_mask] = np.interp(ft[~ok_mask], ft[ok_mask], motion_2p[ok_mask])
+    elif fill_value == 'nearest':
+        # ---- FIXED: use count of valid points, not len(ok_mask) ----
+        x = ft[ok_mask]
+        y = motion_2p[ok_mask]
+        if x.size == 1:
+            motion_2p[~ok_mask] = y[0]
+        else:
+            pos = np.searchsorted(x, ft, side='left')
+            pos = np.clip(pos, 1, x.size - 1)  # clip using x.size, not len(ok_mask)
+            left_x, right_x = x[pos - 1], x[pos]
+            use_left = np.abs(ft - left_x) <= np.abs(ft - right_x)
+            fill_idx = ~ok_mask & use_left
+            motion_2p[fill_idx] = y[pos - 1][fill_idx]
+            fill_idx = ~ok_mask & ~use_left
+            motion_2p[fill_idx] = y[pos][fill_idx]
+    else:
+        # constant fill
+        motion_2p[~ok_mask] = float(fill_value)
+
+    # Handle large source gaps without dropping frames
+    if mt.size >= 2:
+        dt_src = np.diff(mt)
+        big_gap = (dt_src > max_gap_s)
+        if big_gap.any():
+            for i in np.where(big_gap)[0]:
+                bad = (ft > mt[i]) & (ft < mt[i + 1])
+                # keep current filled values; if you want to mark them:
+                # motion_2p[bad] = np.nan  # or a sentinel
+                # pass for now
+                pass
+
+    return motion_2p
+
+def categorical_to_2p(frame_times, state_values, state_times):
+    """
+    Align categorical (string) states to 2P frame times by nearest time sample.
+    Returns: array of states, one per frame.
+    """
+    ft = np.asarray(frame_times)
+    st = np.asarray(state_times)
+    vals = np.asarray(state_values)
+
+    # find nearest state_time index for each 2P frame
+    idx = np.searchsorted(st, ft, side='left')
+    idx = np.clip(idx, 0, len(st)-1)
+
+    # choose whichever state_time is actually closer
+    prev = np.maximum(idx-1, 0)
+    next_ = np.minimum(idx, len(st)-1)
+    nearer = np.where(
+        np.abs(ft - st[prev]) < np.abs(ft - st[next_]),
+        prev,
+        next_
+    )
+
+    return vals[nearer]
+
+def make_aligned_frame_df(frame_times, state_df):
+    motion_2p = motion_to_2p_bins(frame_times, state_df['motion'], state_df['time'])
+    state_2p = categorical_to_2p(frame_times, state_df['state'], state_df['time'])
+    aligned_df = pd.DataFrame({
+        "frame_time": frame_times,
+        "motion_energy": motion_2p,
+        "state": state_2p
+    })
+    return aligned_df
 
 # def match_column_by_nearest_time(
 #     camera_times,

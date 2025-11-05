@@ -17,7 +17,7 @@ class Suite2POutput:
 
         scope_fs (float; default: 1.366): capture rate of 2P scope
     """
-    def __init__(self, suite2p_path, plane='plane0', scope_fs=1.366): 
+    def __init__(self, suite2p_path, plane='plane0', scope_fs=None): 
         self.suite2p_path = suite2p_path
         self.tif_folder = os.path.dirname(suite2p_path)
         # if basepath accidentally provided, try checking if suite2p folder exists within
@@ -31,12 +31,26 @@ class Suite2POutput:
 
         # check if there is data in folder
         plane_path = os.path.normpath(os.path.join(self.suite2p_path, plane))
-        print(self.suite2p_path, plane_path)
 
         if not os.path.exists(plane_path):
             raise ValueError(f'{plane_path} is not a valid suite2p path.')
+        
+        if scope_fs is None:
+            try:
+            # check if can find scope fps from experiment meta data file (must be within same 2p folder in 'field_xx'), if not default to provided arg to function
+                experiment_metadata_file = os.path.join(os.path.dirname(self.suite2p_path), 'Experiment.xml')
+                from utils.getFPS import get_fps_from_xml
+                scope_fs = get_fps_from_xml(experiment_metadata_file)
+                print(f'Found scope fps (scope fs est = {scope_fs}) from Experiment.xml file')
+                self.scope_fs = scope_fs
+            except:
+                self.scope_fs = 1.366
+                print(f'WARNING: no scope fs was provided and experiment.xml file containing scope fps was not found. Please manually provide one.\
+                      defaulting to 1.366 scope fs')
+        else:
+            self.scope_fs = scope_fs
+        
         suite2p_path = plane_path
-        self.scope_fs = scope_fs
         try:
             # load s2p output files into class 
             # flourescence, neuropil flourescence, iscell, options, spikes, and stats files, etc

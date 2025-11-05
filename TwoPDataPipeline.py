@@ -25,7 +25,7 @@ class TwoPData:
 
         treadmill_channel (int; default=6): channel of treadmill
     '''
-    def __init__(self, suite2p_basepath, intan_basepath, facemap_path=None, scope_fps= 1.366,
+    def __init__(self, suite2p_basepath, intan_basepath, facemap_path=None, scope_fps= None,
                   twop_channel=2, pd_channel=5, camera_channel=3, treadmill_channel=6):
         # datapaths
         self.suite2p_basepath = suite2p_basepath
@@ -33,11 +33,11 @@ class TwoPData:
         self.facemap_path = facemap_path
 
         # recording channel info
-        self.scope_fps = scope_fps
         self.twop_chan = twop_channel
         self.pd_chan = pd_channel
         self.camera_chan = camera_channel
         self.treadmill_chan = treadmill_channel
+        self.scope_fps = scope_fps
 
         if not os.path.exists(self.suite2p_basepath):
             raise ValueError(f'Suite2p path {self.suite2p_basepath} does not exist.')
@@ -48,18 +48,18 @@ class TwoPData:
                                                                                         twop_chan=twop_channel, pd_chan=pd_channel,
                                                                                         camera_chan=camera_channel, treadmill_chan=treadmill_channel)  
         ## get times in seconds of TTL triggers for scope, photodiode, camera, and treadmill
-        self.scope_times, self.scope_times_end = get_analog_times(self.twop_raw, upTransition=True)
+        self.scope_times, self.scope_times_end = get_analog_times(self.twop_raw, upTransition=True, sample_type='scope')
         try:
             self.scope_times, self.scope_times_end = align_scope_triggers_to_frames(self.s2p_out, self.scope_times)
         except:
-            print(f'Could not confirm alignment of scope and triggers.')
+            print(f'Did not fix alignment of scope and triggers.')
 
         if self.photodiode_raw is not None:
-            self.pd_times, self.pd_times_end = get_analog_times(self.photodiode_raw)
+            self.pd_times, self.pd_times_end = get_analog_times(self.photodiode_raw, sample_type='photodiode')
         if self.camera_chan is not None:
-            self.camera_times, self.camera_times_end = get_analog_times(self.camera_raw)
+            self.camera_times, self.camera_times_end = get_analog_times(self.camera_raw, sample_type='camera')
         if treadmill_channel is not None:
-            self.treadmill_times, self.treadmill_times_end = get_analog_times(self.treadmill_raw) 
+            self.treadmill_times, self.treadmill_times_end = get_analog_times(self.treadmill_raw, sample_type='treadmill') 
         # read in facemap data
         if self.facemap_path is not None:
             self.facemap_data = get_facemap_data(self.facemap_path)

@@ -26,24 +26,27 @@ def min_max_norm(value_arr):
     min_max_normalized = (value_arr - min_val) / (max_val - min_val)
     return min_max_normalized
 
-def zscore_robust(value_arr):
+def zscore_robust(value_arr, axis=1):
     """
-    Calculate robust z-score, avoiding outliers from standard z-scoring methods
-    
-    Parameters:
-    -----------
-    value_arr : array-like
-        Data to normalize 
+    Compute robust z-scores using the median and MAD (median absolute dev).
 
-    Returns:
-    --------
+    Parameters
+    ----------
+    value_arr : array-like
+        Input data (2D or 1D).
+    axis : int, default=1
+        axis along which to compute the z-score.
+        - axis=1 → row-wise (default)
+        - axis=0 → column-wise
+
+    Returns
+    -------
     z_score : np.ndarray
-        Z-scored input array.
+        z-scored array, same shape as value_arr.
     """
     value_arr = np.asarray(value_arr, float)
-    median = np.nanmedian(value_arr)
-    # get mean absolute deviation 
-    mad = np.nanmedian(np.abs(value_arr - median)) + 1e-12
+    median = np.nanmedian(value_arr, axis=axis, keepdims=True)
+    mad = np.nanmedian(np.abs(value_arr - median), axis=axis, keepdims=True) + 1e-12
     z_score = (value_arr - median) / (1.4826 * mad)
     return z_score
 
